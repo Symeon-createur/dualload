@@ -8,6 +8,6 @@ Téléchargeur YouTube/SoundCloud
 
 ## Installation
 ```bash
-git clone https://github.com/votre-utilisateur/DualLoad.git
+git clone https://github.com/Symeon-createur/DualLoad.git
 cd DualLoad
 pip install -r requirements.txt
