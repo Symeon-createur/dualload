@@ -1,0 +1,6 @@
+# Fichiers à ignorer
+downloads/
+temp_downloads/
+__pycache__/
+*.log
+*.bat

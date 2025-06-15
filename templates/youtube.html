@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DualLoad - YouTube</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <style>
+        /* Styles spécifiques à YouTube */
+        .youtube-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .youtube-form {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            border-top: 4px solid #FF0000;
+        }
+        
+        .youtube-form label {
+            color: #FF0000;
+            font-weight: 600;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+        
+        .youtube-form input[type="url"] {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .youtube-form select {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .youtube-form button {
+            background: #FF0000;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        
+        .youtube-form button:hover {
+            background: #CC0000;
+        }
+        
+        .quality-options {
+            display: flex;
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .quality-option {
+            flex: 1;
+            text-align: center;
+            padding: 1rem;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .quality-option:hover {
+            border-color: #FF0000;
+        }
+        
+        .quality-option.selected {
+            border: 2px solid #FF0000;
+            background: rgba(255,0,0,0.05);
+        }
+        
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            color: #FF0000;
+            text-decoration: none;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            transition: color 0.3s;
+        }
+        
+        .back-button:hover {
+            color: #CC0000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}" class="back-button">
+            <svg width="20" height="20" viewBox="0 0 24 24" style="vertical-align: middle; margin-right: 8px;">
+                <path fill="#FF0000" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+            Retour à l'accueil
+        </a>
+        
+        <div class="youtube-header">
+            <h1>🎥 Téléchargement YouTube</h1>
+        </div>
+        
+        {% for message in messages %}
+            <div class="alert alert-{{ message[1] }}">{{ message[0] }}</div>
+        {% endfor %}
+        
+        <form id="download-form" class="youtube-form" action="{{ url_for('youtube') }}" method="post">
+            <div class="form-group">
+                <label for="url">URL YouTube :</label>
+                <input type="url" id="url" name="url" required placeholder="https://www.youtube.com/watch?v=...">
+            </div>
+
+            <div class="form-group">
+                <label for="mode">Type :</label>
+                <select name="mode" id="mode" onchange="updateQualityOptions()">
+                    <option value="video">Vidéo</option>
+                    <option value="audio">Audio</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Qualité :</label>
+                <div id="quality-options" class="quality-options">
+                    <!-- Options générées dynamiquement -->
+                </div>
+            </div>
+
+            <button type="submit" id="submit-btn">
+                ⬇️ Télécharger
+            </button>
+            
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Téléchargement en cours...</p>
+            </div>
+        </form>
+    </div>
+
+    <script>
+    function updateQualityOptions() {
+        const mode = document.getElementById("mode").value;
+        const container = document.getElementById("quality-options");
+        container.innerHTML = "";
+        
+        const options = mode === "audio" 
+            ? { "128": "128 kbps", "192": "192 kbps", "320": "320 kbps" }
+            : { "360": "360p", "720": "720p HD", "1080": "1080p Full HD" };
+        
+        for (const [value, text] of Object.entries(options)) {
+            const option = document.createElement("div");
+            option.className = "quality-option";
+            option.innerHTML = `
+                <input type="radio" id="quality_${value}" name="quality" value="${value}" ${value==="192"?"checked":""}>
+                <label for="quality_${value}">${text}</label>
+            `;
+            option.addEventListener("click", function() {
+                this.querySelector("input").checked = true;
+                document.querySelectorAll(".quality-option").forEach(opt => {
+                    opt.classList.remove("selected");
+                });
+                this.classList.add("selected");
+            });
+            container.appendChild(option);
+        }
+    }
+    
+    document.getElementById("download-form").addEventListener("submit", function(e) {
+        const submitBtn = document.getElementById("submit-btn");
+        const loading = document.getElementById("loading");
+        
+        submitBtn.disabled = true;
+        loading.style.display = "block";
+        
+        e.preventDefault();
+        
+        fetch(this.action, {
+            method: 'POST',
+            body: new FormData(this)
+        })
+        .then(response => {
+            if (response.redirected) {
+                window.location.href = response.url;
+            } else {
+                return response.text().then(text => {
+                    document.open();
+                    document.write(text);
+                    document.close();
+                });
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            submitBtn.disabled = false;
+            loading.style.display = "none";
+            alert("Erreur lors du téléchargement: " + error.message);
+        });
+    });
+    
+    // Initialiser les options
+    updateQualityOptions();
+    </script>
+</body>
+</html>

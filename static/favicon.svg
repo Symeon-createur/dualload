@@ -1,0 +1,18 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <!-- Fond dégradé -->
+    <defs>
+        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#FF0000" />
+            <stop offset="100%" stop-color="#FF8800" />
+        </linearGradient>
+    </defs>
+    <circle cx="100" cy="100" r="90" fill="url(#grad1)"/>
+    
+    <!-- Éléments fusionnés -->
+    <path d="M60,70 L60,130 C75,150 100,130 100,100 C100,70 125,50 140,70 L140,130 C125,150 100,130 100,100 C100,70 75,50 60,70 Z" 
+          fill="white" fill-rule="evenodd"/>
+    <polygon points="100,75 130,100 100,125 70,100" fill="url(#grad1)" opacity="0.9"/>
+    
+    <!-- Effet 3D -->
+    <circle cx="100" cy="100" r="90" fill="none" stroke="white" stroke-width="2" opacity="0.3"/>
+</svg>

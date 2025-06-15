@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DualLoad - SoundCloud</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <style>
+        .download-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .option-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            transition: transform 0.3s;
+            border-top: 4px solid #FF8800;
+        }
+        
+        .option-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .option-card h2 {
+            margin-top: 0;
+            color: #FF8800;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .option-card .download-form {
+            margin-top: 1rem;
+        }
+        
+        .option-card label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #666;
+            font-weight: 600;
+        }
+        
+        .option-card input[type="url"] {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .option-card select {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .option-card button {
+            background-color: #FF8800;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+            width: 100%;
+        }
+        
+        .option-card button:hover {
+            background-color: #e67e00;
+        }
+        
+        .url-example {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 0.5rem;
+            background: #f5f5f5;
+            padding: 0.5rem;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+        
+        code {
+            font-family: monospace;
+            background: #f5f5f5;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            color: #FF8800;
+            text-decoration: none;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            transition: color 0.3s;
+        }
+        
+        .back-button:hover {
+            color: #e67e00;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}" class="back-button">
+            <svg width="20" height="20" viewBox="0 0 24 24" style="vertical-align: middle; margin-right: 8px;">
+                <path fill="#FF8800" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+            Retour
+        </a>
+        
+        <h1>🎶 Téléchargement SoundCloud</h1>
+        
+        {% for message in messages %}
+            <div class="alert alert-{{ message[1] }}">
+                {% if message[1] == 'error' and 'URL invalide' in message[0] %}
+                <strong>Format d'URL incorrect :</strong><br>
+                {% if 'musique unique' in message[0] %}
+                Pour une musique unique, utilisez :<br>
+                <code class="url-example">https://soundcloud.com/artiste/titre</code>
+                {% else %}
+                Pour une playlist, utilisez :<br>
+                <code class="url-example">https://soundcloud.com/artiste/sets/playlist</code>
+                {% endif %}
+                {% else %}
+                {{ message[0] }}
+                {% endif %}
+            </div>
+        {% endfor %}
+        
+        <div class="download-options">
+            <div class="option-card">
+                <h2>🎵 Musique unique</h2>
+                <form class="download-form" action="{{ url_for('soundcloud') }}" method="post">
+                    <input type="hidden" name="content_type" value="single">
+                    <div class="form-group">
+                        <label for="url_single">URL de la musique :</label>
+                        <input type="url" id="url_single" name="url" required 
+                               placeholder="https://soundcloud.com/artiste/titre">
+                        <div class="url-example">Exemple: https://soundcloud.com/martingarrix/higher-ground</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="quality_single">Qualité :</label>
+                        <select name="quality" id="quality_single" required>
+                            <option value="128">128 kbps</option>
+                            <option value="192" selected>192 kbps</option>
+                            <option value="320">320 kbps</option>
+                        </select>
+                    </div>
+                    <button type="submit">📥 Télécharger</button>
+                </form>
+            </div>
+            
+            <div class="option-card">
+                <h2>📚 Playlist / Titres likés</h2>
+                <form class="download-form" action="{{ url_for('soundcloud') }}" method="post">
+                    <input type="hidden" name="content_type" value="collection">
+                    <div class="form-group">
+                        <label for="url_collection">URL de la playlist/profil :</label>
+                        <input type="url" id="url_collection" name="url" required
+                               placeholder="https://soundcloud.com/artiste/sets/playlist">
+                        <div class="url-example">Exemple: https://soundcloud.com/martingarrix/sets/universal-music</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="quality_collection">Qualité :</label>
+                        <select name="quality" id="quality_collection" required>
+                            <option value="128">128 kbps</option>
+                            <option value="192" selected>192 kbps</option>
+                            <option value="320">320 kbps</option>
+                        </select>
+                    </div>
+                    <button type="submit">📦 Télécharger en ZIP</button>
+                </form>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Téléchargement en cours...</p>
+        </div>
+    </div>
+
+    <script>
+    document.querySelectorAll('.download-form').forEach(form => {
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const loading = document.getElementById('loading');
+            const submitBtn = this.querySelector('button[type="submit"]');
+            
+            submitBtn.disabled = true;
+            loading.style.display = 'block';
+            
+            fetch(this.action, {
+                method: 'POST',
+                body: new FormData(this)
+            })
+            .then(response => {
+                if (response.redirected) {
+                    window.location.href = response.url;
+                } else {
+                    return response.text().then(text => {
+                        document.open();
+                        document.write(text);
+                        document.close();
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                submitBtn.disabled = false;
+                loading.style.display = 'none';
+                alert('Erreur lors du téléchargement: ' + error.message);
+            });
+        });
+    });
+    </script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DualLoad - Accueil</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+</head>
+<body>
+    <div class="container">
+        <!-- En-tête avec logo animé -->
+        <header class="app-header">
+            <svg class="app-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#FF0000"/>
+                        <stop offset="100%" stop-color="#FF8800"/>
+                    </linearGradient>
+                </defs>
+                <circle cx="100" cy="100" r="90" fill="url(#logo-gradient)"/>
+                <path d="M60,70 L60,130 C75,150 100,130 100,100 C100,70 125,50 140,70 L140,130 C125,150 100,130 100,100 C100,70 75,50 60,70 Z" 
+                      fill="white" fill-rule="evenodd"/>
+                <polygon points="100,75 130,100 100,125 70,100" fill="url(#logo-gradient)" opacity="0.9"/>
+            </svg>
+
+            <h1 class="app-title">DualLoad</h1>
+            <p class="app-subtitle">Téléchargez en un clic depuis YouTube et SoundCloud</p>
+        </header>
+
+        <!-- Statistiques -->
+        <div class="stats-bar">
+            <div class="stat">
+                <span class="stat-number">10K+</span>
+                <span class="stat-label">Téléchargements</span>
+            </div>
+            <div class="stat">
+                <span class="stat-number">100%</span>
+                <span class="stat-label">Gratuit</span>
+            </div>
+            <div class="stat">
+                <span class="stat-number">⚡</span>
+                <span class="stat-label">Rapide</span>
+            </div>
+        </div>
+
+        <!-- Plateformes -->
+        <div class="platforms">
+            <a href="{{ url_for('youtube') }}" class="platform-card youtube-card">
+                <div class="platform-icon">
+                    <img src="{{ url_for('static', filename='youtube-icon.svg') }}" alt="YouTube" loading="lazy">
+                </div>
+                <div class="platform-info">
+                    <h2>YouTube</h2>
+                    <p>Téléchargez vidéos et musiques</p>
+                    <ul class="feature-list">
+                        <li>Qualité jusqu'à 1080p</li>
+                        <li>Extraction audio MP3</li>
+                        <li>Conversion directe</li>
+                    </ul>
+                </div>
+            </a>
+            
+            <a href="{{ url_for('soundcloud') }}" class="platform-card soundcloud-card">
+                <div class="platform-icon">
+                    <img src="{{ url_for('static', filename='soundcloud-icon.svg') }}" alt="SoundCloud" loading="lazy">
+                </div>
+                <div class="platform-info">
+                    <h2>SoundCloud</h2>
+                    <p>Téléchargez musiques et podcasts</p>
+                    <ul class="feature-list">
+                        <li>320 kbps qualité max</li>
+                        <li>Playlists complètes</li>
+                        <li>Métadonnées incluses</li>
+                    </ul>
+                </div>
+            </a>
+        </div>
+
+        <!-- Call-to-action -->
+        <div class="cta-section">
+            <p>Prêt à commencer ? Choisissez votre plateforme ci-dessus</p>
+            <div class="tips">
+                <span class="tip-icon">💡</span>
+                <span>Astuce : Coller directement le lien dans la barre d'adresse</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
