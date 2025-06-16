@@ -65,7 +65,7 @@ def download_media(url, platform, quality=None):
     try:
         if platform == 'youtube':
             opts = {
-                'format': f'bestvideo[height<={quality or "1080"}]+bestaudio/best',
+                'format': f'bestvideo[height<={quality or "2160"}]+bestaudio/best',
                 'outtmpl': temp_file + '.%(ext)s',
                 'merge_output_format': 'mp4',
                 'verbose': True,
@@ -181,6 +181,10 @@ def youtube():
             if mode == "audio":
                 filename = download_media(url, 'youtube', '192')
             else:
+                # Validation des qualités vidéo
+                valid_qualities = ['360', '480', '720', '1080', '1440', '2160']
+                if quality not in valid_qualities:
+                    quality = '1080'  # Valeur par défaut
                 filename = download_media(url, 'youtube', quality)
                 
             flash("Téléchargement réussi!", "success")

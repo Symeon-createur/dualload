@@ -67,13 +67,13 @@
         }
         
         .quality-options {
-            display: flex;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
             gap: 1rem;
             margin: 1rem 0;
         }
         
         .quality-option {
-            flex: 1;
             text-align: center;
             padding: 1rem;
             border: 1px solid #eee;
@@ -91,6 +91,11 @@
             background: rgba(255,0,0,0.05);
         }
         
+        .quality-option input[value="2160"] + label {
+            font-weight: bold;
+            color: #FF0000;
+        }
+        
         .back-button {
             display: inline-flex;
             align-items: center;
@@ -103,6 +108,78 @@
         
         .back-button:hover {
             color: #CC0000;
+        }
+
+        /* Barre de progression améliorée */
+        .progress-container {
+            width: 100%;
+            height: 12px;
+            background-color: #f3f3f3;
+            border-radius: 10px;
+            margin: 1.5rem 0;
+            overflow: hidden;
+            display: none;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #FF0000, #FF6B6B);
+            border-radius: 10px;
+            width: 0%;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(
+                90deg,
+                rgba(255,255,255,0) 0%,
+                rgba(255,255,255,0.3) 50%,
+                rgba(255,255,255,0) 100%
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+            color: #666;
+            font-weight: 500;
+            display: none;
+        }
+
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            margin: 1rem 0;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto;
+            border: 4px solid rgba(255,0,0,0.1);
+            border-radius: 50%;
+            border-top-color: #FF0000;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -144,14 +221,17 @@
                 </div>
             </div>
 
+            <div class="progress-container" id="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="progress-text" id="progress-text">Préparation du téléchargement...</div>
+            <div class="loading-spinner" id="loading-spinner">
+                <div class="spinner"></div>
+            </div>
+
             <button type="submit" id="submit-btn">
                 ⬇️ Télécharger
             </button>
-            
-            <div id="loading" class="loading" style="display: none;">
-                <div class="spinner"></div>
-                <p>Téléchargement en cours...</p>
-            </div>
         </form>
     </div>
 
@@ -163,13 +243,22 @@
         
         const options = mode === "audio" 
             ? { "128": "128 kbps", "192": "192 kbps", "320": "320 kbps" }
-            : { "360": "360p", "720": "720p HD", "1080": "1080p Full HD" };
+            : { 
+                "360": "360p", 
+                "480": "480p", 
+                "720": "720p HD", 
+                "1080": "1080p Full HD",
+                "1440": "1440p QHD",
+                "2160": "2160p 4K"
+            };
+        
+        const defaultQuality = mode === "audio" ? "192" : "1080";
         
         for (const [value, text] of Object.entries(options)) {
             const option = document.createElement("div");
             option.className = "quality-option";
             option.innerHTML = `
-                <input type="radio" id="quality_${value}" name="quality" value="${value}" ${value==="192"?"checked":""}>
+                <input type="radio" id="quality_${value}" name="quality" value="${value}" ${value===defaultQuality?"checked":""}>
                 <label for="quality_${value}">${text}</label>
             `;
             option.addEventListener("click", function() {
@@ -179,27 +268,70 @@
                 });
                 this.classList.add("selected");
             });
+            
+            if (value === defaultQuality) {
+                option.classList.add("selected");
+            }
+            
             container.appendChild(option);
         }
     }
     
     document.getElementById("download-form").addEventListener("submit", function(e) {
-        const submitBtn = document.getElementById("submit-btn");
-        const loading = document.getElementById("loading");
-        
-        submitBtn.disabled = true;
-        loading.style.display = "block";
-        
         e.preventDefault();
         
+        const submitBtn = document.getElementById("submit-btn");
+        const progressContainer = document.getElementById("progress-container");
+        const progressBar = document.getElementById("progress-bar");
+        const progressText = document.getElementById("progress-text");
+        const loadingSpinner = document.getElementById("loading-spinner");
+        
+        // Désactiver le bouton et afficher la progression
+        submitBtn.disabled = true;
+        progressContainer.style.display = "block";
+        progressText.style.display = "block";
+        loadingSpinner.style.display = "block";
+        
+        // Simuler une progression
+        let progress = 0;
+        const progressInterval = setInterval(() => {
+            progress += Math.random() * 10;
+            if (progress > 90) clearInterval(progressInterval);
+            
+            progressBar.style.width = `${Math.min(progress, 100)}%`;
+            
+            if (progress < 30) {
+                progressText.textContent = "Début du téléchargement...";
+            } else if (progress < 70) {
+                progressText.textContent = "Téléchargement en cours...";
+            } else {
+                progressText.textContent = "Finalisation...";
+            }
+        }, 500);
+        
+        // Envoi réel de la requête
         fetch(this.action, {
             method: 'POST',
             body: new FormData(this)
         })
         .then(response => {
-            if (response.redirected) {
-                window.location.href = response.url;
-            } else {
+            clearInterval(progressInterval);
+            progressBar.style.width = "100%";
+            progressText.textContent = "Terminé !";
+            
+            // Masquer les éléments de progression après un délai
+            setTimeout(() => {
+                progressContainer.style.display = "none";
+                progressText.style.display = "none";
+                loadingSpinner.style.display = "none";
+                submitBtn.disabled = false;
+                
+                if (response.redirected) {
+                    window.location.href = response.url;
+                }
+            }, 1000);
+            
+            if (!response.redirected) {
                 return response.text().then(text => {
                     document.open();
                     document.write(text);
@@ -208,24 +340,33 @@
             }
         })
         .catch(error => {
+            clearInterval(progressInterval);
             console.error('Error:', error);
+            progressBar.style.background = "#ff3333";
+            progressText.textContent = "Erreur lors du téléchargement";
             submitBtn.disabled = false;
-            loading.style.display = "none";
-            alert("Erreur lors du téléchargement: " + error.message);
+            loadingSpinner.style.display = "none";
+            
+            // Optionnel: masquer aussi la barre après un délai en cas d'erreur
+            setTimeout(() => {
+                progressContainer.style.display = "none";
+                progressText.style.display = "none";
+            }, 3000);
         });
     });
     
     // Initialiser les options
     updateQualityOptions();
     </script>
-        <!-- Footer avec lien GitHub et copyright -->
-        <footer class="app-footer" style="text-align:center; margin: 2em 0; font-size: 0.9em; color: #555;">
-            <p>
-                &copy; Symeon 2025 — Voir le projet sur 
-                <a href="https://github.com/Symeon-createur/dualload" target="_blank" rel="noopener noreferrer">
-                    GitHub
-                </a>
-            </p>
-        </footer>
+    
+    <!-- Footer avec lien GitHub et copyright -->
+    <footer class="app-footer" style="text-align:center; margin: 2em 0; font-size: 0.9em; color: #555;">
+        <p>
+            &copy; Symeon 2025 — Voir le projet sur 
+            <a href="https://github.com/Symeon-createur/dualload" target="_blank" rel="noopener noreferrer">
+                GitHub
+            </a>
+        </p>
+    </footer>
 </body>
 </html>

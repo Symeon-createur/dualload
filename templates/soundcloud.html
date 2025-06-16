@@ -110,6 +110,78 @@
         .back-button:hover {
             color: #e67e00;
         }
+
+        /* Barre de progression améliorée */
+        .progress-container {
+            width: 100%;
+            height: 12px;
+            background-color: #f3f3f3;
+            border-radius: 10px;
+            margin: 1.5rem 0;
+            overflow: hidden;
+            display: none;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #FF8800, #FFBB33);
+            border-radius: 10px;
+            width: 0%;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(
+                90deg,
+                rgba(255,255,255,0) 0%,
+                rgba(255,255,255,0.3) 50%,
+                rgba(255,255,255,0) 100%
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+            color: #666;
+            font-weight: 500;
+            display: none;
+        }
+
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            margin: 1rem 0;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto;
+            border: 4px solid rgba(255,136,0,0.1);
+            border-radius: 50%;
+            border-top-color: #FF8800;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -159,6 +231,13 @@
                             <option value="320">320 kbps</option>
                         </select>
                     </div>
+                    <div class="progress-container" id="progress-single">
+                        <div class="progress-bar" id="progress-bar-single"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text-single">Préparation du téléchargement...</div>
+                    <div class="loading-spinner" id="loading-spinner-single">
+                        <div class="spinner"></div>
+                    </div>
                     <button type="submit">📥 Télécharger</button>
                 </form>
             </div>
@@ -181,14 +260,16 @@
                             <option value="320">320 kbps</option>
                         </select>
                     </div>
+                    <div class="progress-container" id="progress-collection">
+                        <div class="progress-bar" id="progress-bar-collection"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text-collection">Préparation du téléchargement...</div>
+                    <div class="loading-spinner" id="loading-spinner-collection">
+                        <div class="spinner"></div>
+                    </div>
                     <button type="submit">📦 Télécharger en ZIP</button>
                 </form>
             </div>
-        </div>
-        
-        <div id="loading" class="loading" style="display: none;">
-            <div class="spinner"></div>
-            <p>Téléchargement en cours...</p>
         </div>
     </div>
 
@@ -197,20 +278,59 @@
         form.addEventListener('submit', function(e) {
             e.preventDefault();
             
-            const loading = document.getElementById('loading');
+            const formId = this.querySelector('input[type="hidden"]').value;
             const submitBtn = this.querySelector('button[type="submit"]');
+            const progressContainer = document.getElementById(`progress-${formId}`);
+            const progressBar = document.getElementById(`progress-bar-${formId}`);
+            const progressText = document.getElementById(`progress-text-${formId}`);
+            const loadingSpinner = document.getElementById(`loading-spinner-${formId}`);
             
+            // Désactiver le bouton et afficher la progression
             submitBtn.disabled = true;
-            loading.style.display = 'block';
+            progressContainer.style.display = "block";
+            progressText.style.display = "block";
+            loadingSpinner.style.display = "block";
             
+            // Simuler une progression
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 10;
+                if (progress > 90) clearInterval(progressInterval);
+                
+                progressBar.style.width = `${Math.min(progress, 100)}%`;
+                
+                if (progress < 30) {
+                    progressText.textContent = "Début du téléchargement...";
+                } else if (progress < 70) {
+                    progressText.textContent = "Téléchargement en cours...";
+                } else {
+                    progressText.textContent = "Finalisation...";
+                }
+            }, 500);
+            
+            // Envoi réel de la requête
             fetch(this.action, {
                 method: 'POST',
                 body: new FormData(this)
             })
             .then(response => {
-                if (response.redirected) {
-                    window.location.href = response.url;
-                } else {
+                clearInterval(progressInterval);
+                progressBar.style.width = "100%";
+                progressText.textContent = "Terminé !";
+                
+                // Masquer les éléments de progression après un délai
+                setTimeout(() => {
+                    progressContainer.style.display = "none";
+                    progressText.style.display = "none";
+                    loadingSpinner.style.display = "none";
+                    submitBtn.disabled = false;
+                    
+                    if (response.redirected) {
+                        window.location.href = response.url;
+                    }
+                }, 1000);
+                
+                if (!response.redirected) {
                     return response.text().then(text => {
                         document.open();
                         document.write(text);
@@ -219,23 +339,31 @@
                 }
             })
             .catch(error => {
+                clearInterval(progressInterval);
                 console.error('Error:', error);
+                progressBar.style.background = "#ff3333";
+                progressText.textContent = "Erreur lors du téléchargement";
                 submitBtn.disabled = false;
-                loading.style.display = 'none';
-                alert('Erreur lors du téléchargement: ' + error.message);
+                loadingSpinner.style.display = "none";
+                
+                // Masquer aussi la barre après un délai en cas d'erreur
+                setTimeout(() => {
+                    progressContainer.style.display = "none";
+                    progressText.style.display = "none";
+                }, 3000);
             });
         });
     });
     </script>
-            <!-- Footer avec lien GitHub et copyright -->
-        <footer class="app-footer" style="text-align:center; margin: 2em 0; font-size: 0.9em; color: #555;">
-            <p>
-                &copy; Symeon 2025 — Voir le projet sur 
-                <a href="https://github.com/Symeon-createur/dualload" target="_blank" rel="noopener noreferrer">
-                    GitHub
-                </a>
-            </p>
-        </footer>
-
+    
+    <!-- Footer avec lien GitHub et copyright -->
+    <footer class="app-footer" style="text-align:center; margin: 2em 0; font-size: 0.9em; color: #555;">
+        <p>
+            &copy; Symeon 2025 — Voir le projet sur 
+            <a href="https://github.com/Symeon-createur/dualload" target="_blank" rel="noopener noreferrer">
+                GitHub
+            </a>
+        </p>
+    </footer>
 </body>
 </html>
