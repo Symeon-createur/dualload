@@ -5,30 +5,35 @@
 ![DualLoad Banner](https://dualload.online/assets/banner.jpg)
 
 ## 🚀 Fonctionnalités Avancées
-- **Téléchargement haute qualité** (jusqu'à 320kbps/4K)
+- **Téléchargement haute qualité** (jusqu'à 320kbps / 1080p)
 - **Conversion intelligente** :
-  - MP3/MP4/WAV/FLAC
+  - MP3 / MP4 / WAV / FLAC
   - Métadonnées préservées
 - **Gestion des collections** :
   - Playlists complètes
-  - Likes/FAV SoundCloud
-- **Système de file d'attente** avec reprise automatique
+  - Likes / favoris SoundCloud
+- **File d’attente** avec reprise automatique
 
-## 💻 Installation (Linux/macOS/Windows WSL)
+---
+
+## 💻 Utilisation locale (Linux / macOS / Windows WSL)
+L'application fonctionne **directement en local**. Aucun hébergement n’est nécessaire.
+
+### Prérequis
+- [Python 3.8+](https://www.python.org/downloads/)
+- ✅ **[FFmpeg](https://ffmpeg.org/download.html)** (obligatoire pour fusionner audio + vidéo)
+
+### Installation rapide
 ```bash
 # Clonez le dépôt
 git clone https://github.com/Symeon-createur/DualLoad.git
 cd DualLoad
 
-# Configurez l'environnement
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
-
-# Installez les dépendances
-pip install --upgrade pip setuptools wheel
+# Installez les dépendances Python
 pip install -r requirements.txt
 
-# Configuration initiale
-cp config.example.py config.py
-nano config.py  # Éditez selon vos besoins
+# Vérifiez que ffmpeg est installé
+ffmpeg -version
+
+# Lancez l'application
+python app.py
