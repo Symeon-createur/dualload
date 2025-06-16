@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for, flash, get_flashed_messages
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash, get_flashed_messages, session, abort
 import os
 import yt_dlp
 from urllib.parse import urlparse
@@ -7,13 +7,25 @@ import zipfile
 import shutil
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import atexit
+import secrets
+from functools import wraps
+from collections import defaultdict
+import datetime
 
+# Initialisation de l'application
 app = Flask(__name__, static_url_path='/static')
-app.secret_key = os.urandom(24)
 
-# Configuration
+# Configuration sécurité
+app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+app.permanent_session_lifetime = timedelta(minutes=30)
+
+# Configuration admin
+ADMIN_PANEL = f"admin_{secrets.token_hex(8)}.html"
+ADMIN_PASSWORD = "Mot2Passe"  # À modifier impérativement
+
+# Configuration des dossiers
 DOWNLOAD_FOLDER = os.path.abspath("downloads")
 TEMP_FOLDER = os.path.abspath("temp_downloads")
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
@@ -29,6 +41,22 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Dictionnaire pour stocker les IPs connectées
+connected_ips = defaultdict(lambda: {'last_activity': datetime.datetime.now()})
+banned_ips = set()
+
+# ==============================================
+# Décorateurs et fonctions utilitaires
+# ==============================================
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('is_admin'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 def is_valid_url(url):
     try:
@@ -48,7 +76,7 @@ def validate_soundcloud_url(url, expected_type):
         if expected_type == 'single':
             return len(path_parts) >= 2 and 'sets' not in path_parts
         elif expected_type == 'collection':
-            return (any(x in path_parts for x in ['sets', 'playlists', 'likes']) or 
+            return (any(x in path_parts for x in ['sets', 'playlists', 'likes']) or \
                    (len(path_parts) == 1 and not any(x in path_parts for x in ['stream', 'tracks'])))
         return False
     except Exception:
@@ -58,6 +86,24 @@ def sanitize_filename(filename):
     filename = re.sub(r'[\\/*?:"<>|]', "", filename)
     filename = re.sub(r'\s+', ' ', filename).strip()
     return filename[:200]
+
+# ==============================================
+# Middleware pour tracker les IPs
+# ==============================================
+
+@app.before_request
+def track_activity():
+    client_ip = request.remote_addr
+    if client_ip in banned_ips:
+        abort(403, description="Votre IP a été bannie")
+    
+    if request.path.startswith('/admin'):
+        connected_ips[client_ip]['last_activity'] = datetime.datetime.now()
+        connected_ips[client_ip]['user_agent'] = request.headers.get('User-Agent')
+
+# ==============================================
+# Fonctions de téléchargement
+# ==============================================
 
 def download_media(url, platform, quality=None):
     temp_file = os.path.join(TEMP_FOLDER, f"dl_{int(time.time())}")
@@ -162,6 +208,10 @@ def download_soundcloud_collection(url):
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+# ==============================================
+# Routes principales
+# ==============================================
+
 @app.route("/")
 def index():
     return render_template("index.html", messages=get_flashed_messages())
@@ -181,10 +231,9 @@ def youtube():
             if mode == "audio":
                 filename = download_media(url, 'youtube', '192')
             else:
-                # Validation des qualités vidéo
                 valid_qualities = ['360', '480', '720', '1080', '1440', '2160']
                 if quality not in valid_qualities:
-                    quality = '1080'  # Valeur par défaut
+                    quality = '1080'
                 filename = download_media(url, 'youtube', quality)
                 
             flash("Téléchargement réussi!", "success")
@@ -254,6 +303,316 @@ def downloaded(filename):
         logger.error(f"Erreur downloaded: {str(e)}", exc_info=True)
         return redirect(url_for('index'))
 
+# ==============================================
+# Routes Admin
+# ==============================================
+
+@app.route('/admin_login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['is_admin'] = True
+            session.permanent = True
+            return redirect(url_for('admin_panel'))
+        else:
+            flash('Mot de passe incorrect', 'error')
+    return render_template('admin_login.html')
+
+@app.route('/admin')
+@admin_required
+def admin_panel():
+    stats = {
+        'downloads': len(os.listdir(DOWNLOAD_FOLDER)),
+        'space_used': f"{sum(os.path.getsize(os.path.join(DOWNLOAD_FOLDER, f)) for f in os.listdir(DOWNLOAD_FOLDER)) / (1024*1024):.2f} MB",
+        'last_downloads': sorted(
+            [{
+                'name': f,
+                'date': datetime.fromtimestamp(os.path.getmtime(os.path.join(DOWNLOAD_FOLDER, f))).strftime('%Y-%m-%d %H:%M:%S'),
+                'size': f"{os.path.getsize(os.path.join(DOWNLOAD_FOLDER, f)) / 1024:.1f} KB"
+            } for f in os.listdir(DOWNLOAD_FOLDER)],
+            key=lambda x: x['date'],
+            reverse=True
+        )[:10]
+    }
+    return render_template(ADMIN_PANEL, stats=stats, connected_ips=connected_ips, banned_ips=banned_ips)
+
+@app.route('/admin/ban/<ip>')
+@admin_required
+def ban_ip(ip):
+    banned_ips.add(ip)
+    if ip in connected_ips:
+        del connected_ips[ip]
+    flash(f'IP {ip} bannie avec succès', 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/unban/<ip>')
+@admin_required
+def unban_ip(ip):
+    if ip in banned_ips:
+        banned_ips.remove(ip)
+    flash(f'IP {ip} débannie avec succès', 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/kick/<ip>')
+@admin_required
+def kick_ip(ip):
+    if ip in connected_ips:
+        del connected_ips[ip]
+    flash(f'IP {ip} kickée avec succès', 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/cleanup')
+@admin_required
+def admin_cleanup():
+    try:
+        cleanup()
+        flash('Nettoyage effectué avec succès', 'success')
+    except Exception as e:
+        flash(f'Erreur lors du nettoyage: {str(e)}', 'error')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('is_admin', None)
+    flash('Vous avez été déconnecté', 'success')
+    return redirect(url_for('index'))
+
+# ==============================================
+# Fonctions d'initialisation
+# ==============================================
+
+def create_admin_template():
+    # Créer le dossier templates s'il n'existe pas
+    os.makedirs("templates", exist_ok=True)
+    
+    admin_template = r"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #FF3E41;
+            --secondary: #2B2D42;
+            --light: #F8F9FA;
+            --dark: #212529;
+        }
+        
+        body {
+            font-family: 'Roboto', sans-serif;
+            line-height: 1.6;
+            color: var(--dark);
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .admin-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .admin-header {
+            background: var(--secondary);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .admin-title {
+            margin: 0;
+            font-weight: 500;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s;
+            margin: 5px;
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-secondary {
+            background: var(--secondary);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            padding: 20px;
+        }
+        
+        .stat-card {
+            background: var(--light);
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid var(--primary);
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        th {
+            background: var(--secondary);
+            color: white;
+        }
+        
+        tr:hover {
+            background-color: rgba(0,0,0,0.02);
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .badge-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .badge-warning {
+            background: #ffc107;
+            color: var(--dark);
+        }
+        
+        .badge-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .section {
+            padding: 0 20px 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-container">
+        <div class="admin-header">
+            <h1 class="admin-title">👑 Panel Admin - DualLoad</h1>
+            <a href="{{ url_for('admin_logout') }}" class="btn btn-secondary">Déconnexion</a>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Téléchargements</h3>
+                <p>{{ stats['downloads'] }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Espace utilisé</h3>
+                <p>{{ stats['space_used'] }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>IPs connectées</h3>
+                <p>{{ connected_ips|length }}</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>🔌 Utilisateurs connectés</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>IP</th>
+                        <th>User Agent</th>
+                        <th>Dernière activité</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ip, data in connected_ips.items() %}
+                    <tr>
+                        <td>{{ ip }}</td>
+                        <td>{{ data.user_agent|default('Inconnu') }}</td>
+                        <td>{{ data.last_activity.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>
+                            <a href="{{ url_for('ban_ip', ip=ip) }}" class="btn btn-danger">Bannir</a>
+                            <a href="{{ url_for('kick_ip', ip=ip) }}" class="btn btn-secondary">Kick</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>🚫 IPs bannies</h2>
+            {% if banned_ips %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>IP</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ip in banned_ips %}
+                    <tr>
+                        <td>{{ ip }}</td>
+                        <td>
+                            <a href="{{ url_for('unban_ip', ip=ip) }}" class="btn btn-success">Débannir</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>Aucune IP bannie actuellement</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <h2>🗑️ Nettoyage</h2>
+            <a href="{{ url_for('admin_cleanup') }}" class="btn btn-danger"
+               onclick="return confirm('Vider tous les fichiers temporaires?')">
+               Nettoyer les fichiers temporaires
+            </a>
+        </div>
+    </div>
+</body>
+</html>"""
+    with open(f"templates/{ADMIN_PANEL}", "w", encoding='utf-8') as f:
+        f.write(admin_template)
+
 def cleanup():
     """Nettoyage des dossiers temporaires"""
     for folder in [TEMP_FOLDER, DOWNLOAD_FOLDER]:
@@ -267,8 +626,8 @@ def cleanup():
             except Exception as e:
                 logger.error(f"Échec suppression {file_path}: {e}")
 
-# Nettoyage au démarrage
-cleanup()
+# Initialisation au démarrage
+create_admin_template()
 atexit.register(cleanup)
 
 if __name__ == "__main__":
