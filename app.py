@@ -93,13 +93,24 @@ def sanitize_filename(filename):
 
 @app.before_request
 def track_activity():
-    client_ip = request.remote_addr
+    # Récupération de la vraie IP client (fonctionne derrière proxy)
+    if request.headers.getlist("X-Forwarded-For"):
+        client_ip = request.headers.getlist("X-Forwarded-For")[0].split(',')[0].strip()
+    else:
+        client_ip = request.remote_addr
+
+    # Protection contre les IPs bannies
     if client_ip in banned_ips:
-        abort(403, description="Votre IP a été bannie")
+        abort(403, description="Accès refusé - IP bannie")
     
+    # Tracking des activités admin
     if request.path.startswith('/admin'):
-        connected_ips[client_ip]['last_activity'] = datetime.datetime.now()
-        connected_ips[client_ip]['user_agent'] = request.headers.get('User-Agent')
+        connected_ips[client_ip] = {
+            'last_activity': datetime.datetime.now(),
+            'user_agent': request.headers.get('User-Agent', 'Inconnu'),
+            'requests': connected_ips.get(client_ip, {}).get('requests', 0) + 1
+        }
+        logger.debug(f"Activité enregistrée pour IP: {client_ip}")
 
 # ==============================================
 # Fonctions de téléchargement
@@ -382,7 +393,21 @@ def admin_logout():
 # ==============================================
 
 def create_admin_template():
-    # Créer le dossier templates s'il n'existe pas
+    global ADMIN_PANEL
+    
+    # Supprimer les anciens fichiers admin_*.html (sauf admin_login.html)
+    for filename in os.listdir("templates"):
+        if (filename.startswith("admin_") 
+            and filename.endswith(".html")
+            and filename != "admin_login.html"):
+            try:
+                os.remove(os.path.join("templates", filename))
+                print(f"Supprimé : {filename}")
+            except Exception as e:
+                print(f"Erreur suppression {filename} : {e}")
+
+    # Créer un nouveau fichier admin
+    ADMIN_PANEL = f"admin_{secrets.token_hex(8)}.html"
     os.makedirs("templates", exist_ok=True)
     
     admin_template = r"""<!DOCTYPE html>
@@ -554,6 +579,7 @@ def create_admin_template():
                     <tr>
                         <th>IP</th>
                         <th>User Agent</th>
+                        <th>Requêtes</th>
                         <th>Dernière activité</th>
                         <th>Actions</th>
                     </tr>
@@ -562,11 +588,12 @@ def create_admin_template():
                     {% for ip, data in connected_ips.items() %}
                     <tr>
                         <td>{{ ip }}</td>
-                        <td>{{ data.user_agent|default('Inconnu') }}</td>
-                        <td>{{ data.last_activity.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>{{ data.user_agent|truncate(50) }}</td>
+                        <td>{{ data.requests }}</td>
+                        <td>{{ data.last_activity.strftime('%H:%M:%S') }}</td>
                         <td>
                             <a href="{{ url_for('ban_ip', ip=ip) }}" class="btn btn-danger">Bannir</a>
-                            <a href="{{ url_for('kick_ip', ip=ip) }}" class="btn btn-secondary">Kick</a>
+                            <a href="{{ url_for('kick_ip', ip=ip) }}" class="btn btn-warning">Kick</a>
                         </td>
                     </tr>
                     {% endfor %}
@@ -612,6 +639,12 @@ def create_admin_template():
 </html>"""
     with open(f"templates/{ADMIN_PANEL}", "w", encoding='utf-8') as f:
         f.write(admin_template)
+
+
+@app.route('/')
+def home():
+    return "Application démarrée avec succès !"
+
 
 def cleanup():
     """Nettoyage des dossiers temporaires"""
