@@ -121,13 +121,26 @@ def download_media(url, platform, quality=None):
     
     try:
         if platform == 'youtube':
-            opts = {
-                'format': f'bestvideo[height<={quality or "2160"}]+bestaudio/best',
-                'outtmpl': temp_file + '.%(ext)s',
-                'merge_output_format': 'mp4',
-                'verbose': True,
-                'force_ipv4': True
-            }
+            if request.form.get("mode") == "audio":  # Si mode audio est sélectionné
+                opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': temp_file + '.%(ext)s',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': quality or '192',
+                    }],
+                    'verbose': True,
+                    'force_ipv4': True
+                }
+            else:  # Mode vidéo
+                opts = {
+                    'format': f'bestvideo[height<={quality or "2160"}]+bestaudio/best',
+                    'outtmpl': temp_file + '.%(ext)s',
+                    'merge_output_format': 'mp4',
+                    'verbose': True,
+                    'force_ipv4': True
+                }
         elif platform == 'soundcloud':
             opts = {
                 'format': 'bestaudio/best',
