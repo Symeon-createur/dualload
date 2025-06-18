@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for, flash, get_flashed_messages, session, abort
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash, get_flashed_messages, session, abort, jsonify
 import os
 import yt_dlp
 from urllib.parse import urlparse
@@ -13,6 +13,8 @@ import secrets
 from functools import wraps
 from collections import defaultdict
 import datetime
+import psutil
+from threading import Thread
 
 # Initialisation de l'application
 app = Flask(__name__, static_url_path='/static')
@@ -42,9 +44,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Dictionnaire pour stocker les IPs connectées
-connected_ips = defaultdict(lambda: {'last_activity': datetime.datetime.now()})
-banned_ips = set()
+# Dictionnaire pour stocker les visiteurs en temps réel
+live_visitors = defaultdict(lambda: {
+    'last_activity': datetime.datetime.now(),
+    'user_agent': '',
+    'requests': 0,
+    'banned': False
+})
+
+# Statistiques système
+system_stats = {
+    'cpu': 0,
+    'memory': 0,
+    'disk': 0,
+    'network': {'sent': 0, 'recv': 0}
+}
+
+# Thread pour mettre à jour les stats système
+def update_system_stats():
+    while True:
+        system_stats['cpu'] = psutil.cpu_percent()
+        system_stats['memory'] = psutil.virtual_memory().percent
+        system_stats['disk'] = psutil.disk_usage('/').percent
+        net_io = psutil.net_io_counters()
+        system_stats['network'] = {
+            'sent': net_io.bytes_sent,
+            'recv': net_io.bytes_recv
+        }
+        time.sleep(2)
+
+stats_thread = Thread(target=update_system_stats)
+stats_thread.daemon = True
+stats_thread.start()
 
 # ==============================================
 # Décorateurs et fonctions utilitaires
@@ -88,29 +119,25 @@ def sanitize_filename(filename):
     return filename[:200]
 
 # ==============================================
-# Middleware pour tracker les IPs
+# Middleware pour tracker les visiteurs
 # ==============================================
 
 @app.before_request
 def track_activity():
-    # Récupération de la vraie IP client (fonctionne derrière proxy)
     if request.headers.getlist("X-Forwarded-For"):
         client_ip = request.headers.getlist("X-Forwarded-For")[0].split(',')[0].strip()
     else:
         client_ip = request.remote_addr
 
-    # Protection contre les IPs bannies
-    if client_ip in banned_ips:
+    if live_visitors[client_ip]['banned']:
         abort(403, description="Accès refusé - IP bannie")
     
-    # Tracking des activités admin
-    if request.path.startswith('/admin'):
-        connected_ips[client_ip] = {
-            'last_activity': datetime.datetime.now(),
-            'user_agent': request.headers.get('User-Agent', 'Inconnu'),
-            'requests': connected_ips.get(client_ip, {}).get('requests', 0) + 1
-        }
-        logger.debug(f"Activité enregistrée pour IP: {client_ip}")
+    live_visitors[client_ip] = {
+        'last_activity': datetime.datetime.now(),
+        'user_agent': request.headers.get('User-Agent', 'Inconnu'),
+        'requests': live_visitors.get(client_ip, {}).get('requests', 0) + 1,
+        'banned': False
+    }
 
 # ==============================================
 # Fonctions de téléchargement
@@ -121,7 +148,7 @@ def download_media(url, platform, quality=None):
     
     try:
         if platform == 'youtube':
-            if request.form.get("mode") == "audio":  # Si mode audio est sélectionné
+            if request.form.get("mode") == "audio":
                 opts = {
                     'format': 'bestaudio/best',
                     'outtmpl': temp_file + '.%(ext)s',
@@ -133,7 +160,7 @@ def download_media(url, platform, quality=None):
                     'verbose': True,
                     'force_ipv4': True
                 }
-            else:  # Mode vidéo
+            else:
                 opts = {
                     'format': f'bestvideo[height<={quality or "2160"}]+bestaudio/best',
                     'outtmpl': temp_file + '.%(ext)s',
@@ -345,55 +372,37 @@ def admin_login():
 @app.route('/admin')
 @admin_required
 def admin_panel():
-    stats = {
-        'downloads': len(os.listdir(DOWNLOAD_FOLDER)),
-        'space_used': f"{sum(os.path.getsize(os.path.join(DOWNLOAD_FOLDER, f)) for f in os.listdir(DOWNLOAD_FOLDER)) / (1024*1024):.2f} MB",
-        'last_downloads': sorted(
-            [{
-                'name': f,
-                'date': datetime.fromtimestamp(os.path.getmtime(os.path.join(DOWNLOAD_FOLDER, f))).strftime('%Y-%m-%d %H:%M:%S'),
-                'size': f"{os.path.getsize(os.path.join(DOWNLOAD_FOLDER, f)) / 1024:.1f} KB"
-            } for f in os.listdir(DOWNLOAD_FOLDER)],
-            key=lambda x: x['date'],
-            reverse=True
-        )[:10]
-    }
-    return render_template(ADMIN_PANEL, stats=stats, connected_ips=connected_ips, banned_ips=banned_ips)
+    return render_template(ADMIN_PANEL)
 
-@app.route('/admin/ban/<ip>')
+@app.route('/admin/api/stats')
 @admin_required
-def ban_ip(ip):
-    banned_ips.add(ip)
-    if ip in connected_ips:
-        del connected_ips[ip]
-    flash(f'IP {ip} bannie avec succès', 'success')
-    return redirect(url_for('admin_panel'))
+def admin_api_stats():
+    return jsonify({
+        'visitors': len(live_visitors),
+        'system': system_stats,
+        'ips': {ip: {
+            'user_agent': data['user_agent'],
+            'requests': data['requests'],
+            'last_activity': data['last_activity'].isoformat(),
+            'banned': data['banned']
+        } for ip, data in live_visitors.items()}
+    })
 
-@app.route('/admin/unban/<ip>')
+@app.route('/admin/api/ban/<ip>', methods=['POST'])
 @admin_required
-def unban_ip(ip):
-    if ip in banned_ips:
-        banned_ips.remove(ip)
-    flash(f'IP {ip} débannie avec succès', 'success')
-    return redirect(url_for('admin_panel'))
+def admin_api_ban(ip):
+    if ip in live_visitors:
+        live_visitors[ip]['banned'] = True
+        return jsonify({'status': 'success'})
+    return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
 
-@app.route('/admin/kick/<ip>')
+@app.route('/admin/api/unban/<ip>', methods=['POST'])
 @admin_required
-def kick_ip(ip):
-    if ip in connected_ips:
-        del connected_ips[ip]
-    flash(f'IP {ip} kickée avec succès', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/cleanup')
-@admin_required
-def admin_cleanup():
-    try:
-        cleanup()
-        flash('Nettoyage effectué avec succès', 'success')
-    except Exception as e:
-        flash(f'Erreur lors du nettoyage: {str(e)}', 'error')
-    return redirect(url_for('admin_panel'))
+def admin_api_unban(ip):
+    if ip in live_visitors:
+        live_visitors[ip]['banned'] = False
+        return jsonify({'status': 'success'})
+    return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
 
 @app.route('/admin/logout')
 def admin_logout():
@@ -408,19 +417,23 @@ def admin_logout():
 def create_admin_template():
     global ADMIN_PANEL
     
-    # Supprimer les anciens fichiers admin_*.html (sauf admin_login.html)
-    for filename in os.listdir("templates"):
+    # Créer le dossier templates s'il n'existe pas
+    templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+    os.makedirs(templates_dir, exist_ok=True)
+
+    # Supprimer les anciens fichiers admin_*.html
+    for filename in os.listdir(templates_dir):
         if (filename.startswith("admin_") 
             and filename.endswith(".html")
             and filename != "admin_login.html"):
             try:
-                os.remove(os.path.join("templates", filename))
-                print(f"Supprimé : {filename}")
+                os.remove(os.path.join(templates_dir, filename))
             except Exception as e:
-                print(f"Erreur suppression {filename} : {e}")
+                logger.error(f"Erreur suppression {filename}: {e}")
 
     # Créer un nouveau fichier admin
     ADMIN_PANEL = f"admin_{secrets.token_hex(8)}.html"
+    admin_path = os.path.join(templates_dir, ADMIN_PANEL)
     os.makedirs("templates", exist_ok=True)
     
     admin_template = r"""<!DOCTYPE html>
@@ -428,236 +441,310 @@ def create_admin_template():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <title>Panel Admin - Temps Réel</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root {
-            --primary: #FF3E41;
-            --secondary: #2B2D42;
-            --light: #F8F9FA;
-            --dark: #212529;
-        }
-        
-        body {
-            font-family: 'Roboto', sans-serif;
-            line-height: 1.6;
-            color: var(--dark);
-            background-color: #f5f5f5;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .admin-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 30px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        
-        .admin-header {
-            background: var(--secondary);
-            color: white;
-            padding: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .admin-title {
-            margin: 0;
-            font-weight: 500;
-        }
-        
-        .btn {
-            display: inline-block;
-            padding: 10px 20px;
-            border-radius: 5px;
-            text-decoration: none;
-            font-weight: 500;
-            transition: all 0.3s;
-            margin: 5px;
-        }
-        
-        .btn-primary {
-            background: var(--primary);
-            color: white;
-        }
-        
-        .btn-secondary {
-            background: var(--secondary);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: #dc3545;
-            color: white;
-        }
-        
-        .btn-success {
-            background: #28a745;
-            color: white;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            padding: 20px;
-        }
-        
-        .stat-card {
-            background: var(--light);
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid var(--primary);
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }
-        
-        th {
-            background: var(--secondary);
-            color: white;
-        }
-        
-        tr:hover {
-            background-color: rgba(0,0,0,0.02);
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        
-        .badge-success {
-            background: #28a745;
-            color: white;
-        }
-        
-        .badge-warning {
-            background: #ffc107;
-            color: var(--dark);
-        }
-        
-        .badge-danger {
-            background: #dc3545;
-            color: white;
-        }
-        
-        .section {
-            padding: 0 20px 20px;
-        }
+        .card { margin-bottom: 20px; }
+        .visitor-table { max-height: 400px; overflow-y: auto; }
+        .stat-card { border-left: 4px solid #4e73df; }
+        .banned { background-color: #ffe6e6; }
+        .chart-container { position: relative; height: 300px; width: 100%; }
     </style>
 </head>
 <body>
-    <div class="admin-container">
-        <div class="admin-header">
-            <h1 class="admin-title">👑 Panel Admin - DualLoad</h1>
-            <a href="{{ url_for('admin_logout') }}" class="btn btn-secondary">Déconnexion</a>
+    <div class="container-fluid mt-4">
+        <div class="d-sm-flex align-items-center justify-content-between mb-4">
+            <h1 class="h3 mb-0 text-gray-800">Dashboard Admin - Temps Réel</h1>
+            <a href="{{ url_for('admin_logout') }}" class="btn btn-danger">Déconnexion</a>
         </div>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h3>Téléchargements</h3>
-                <p>{{ stats['downloads'] }}</p>
+
+        <div class="row">
+            <!-- Visiteurs actifs -->
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card stat-card shadow h-100 py-2">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
+                                    Visiteurs actifs</div>
+                                <div class="h5 mb-0 font-weight-bold text-gray-800" id="visitors-count">0</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-users fa-2x text-gray-300"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="stat-card">
-                <h3>Espace utilisé</h3>
-                <p>{{ stats['space_used'] }}</p>
+
+            <!-- CPU Usage -->
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card stat-card shadow h-100 py-2">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
+                                    CPU Usage</div>
+                                <div class="h5 mb-0 font-weight-bold text-gray-800" id="cpu-usage">0%</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-microchip fa-2x text-gray-300"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="stat-card">
-                <h3>IPs connectées</h3>
-                <p>{{ connected_ips|length }}</p>
+
+            <!-- Memory Usage -->
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card stat-card shadow h-100 py-2">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs font-weight-bold text-info text-uppercase mb-1">
+                                    Memory Usage</div>
+                                <div class="h5 mb-0 font-weight-bold text-gray-800" id="memory-usage">0%</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-memory fa-2x text-gray-300"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Disk Usage -->
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card stat-card shadow h-100 py-2">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
+                                    Disk Usage</div>
+                                <div class="h5 mb-0 font-weight-bold text-gray-800" id="disk-usage">0%</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-hdd fa-2x text-gray-300"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="section">
-            <h2>🔌 Utilisateurs connectés</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>IP</th>
-                        <th>User Agent</th>
-                        <th>Requêtes</th>
-                        <th>Dernière activité</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for ip, data in connected_ips.items() %}
-                    <tr>
-                        <td>{{ ip }}</td>
-                        <td>{{ data.user_agent|truncate(50) }}</td>
-                        <td>{{ data.requests }}</td>
-                        <td>{{ data.last_activity.strftime('%H:%M:%S') }}</td>
-                        <td>
-                            <a href="{{ url_for('ban_ip', ip=ip) }}" class="btn btn-danger">Bannir</a>
-                            <a href="{{ url_for('kick_ip', ip=ip) }}" class="btn btn-warning">Kick</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div class="row">
+            <!-- Graphique des performances -->
+            <div class="col-lg-6 mb-4">
+                <div class="card shadow">
+                    <div class="card-header py-3">
+                        <h6 class="m-0 font-weight-bold text-primary">Performances du serveur</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="performanceChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Graphique réseau -->
+            <div class="col-lg-6 mb-4">
+                <div class="card shadow">
+                    <div class="card-header py-3">
+                        <h6 class="m-0 font-weight-bold text-primary">Activité réseau (KB)</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="networkChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <div class="section">
-            <h2>🚫 IPs bannies</h2>
-            {% if banned_ips %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>IP</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for ip in banned_ips %}
-                    <tr>
-                        <td>{{ ip }}</td>
-                        <td>
-                            <a href="{{ url_for('unban_ip', ip=ip) }}" class="btn btn-success">Débannir</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <p>Aucune IP bannie actuellement</p>
-            {% endif %}
-        </div>
-
-        <div class="section">
-            <h2>🗑️ Nettoyage</h2>
-            <a href="{{ url_for('admin_cleanup') }}" class="btn btn-danger"
-               onclick="return confirm('Vider tous les fichiers temporaires?')">
-               Nettoyer les fichiers temporaires
-            </a>
+        <!-- Tableau des visiteurs -->
+        <div class="card shadow mb-4">
+            <div class="card-header py-3">
+                <h6 class="m-0 font-weight-bold text-primary">Visiteurs en temps réel</h6>
+            </div>
+            <div class="card-body visitor-table">
+                <div class="table-responsive">
+                    <table class="table table-bordered" id="visitors-table">
+                        <thead class="thead-light">
+                            <tr>
+                                <th>IP</th>
+                                <th>User Agent</th>
+                                <th>Requêtes</th>
+                                <th>Dernière activité</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="visitors-body">
+                            <!-- Rempli par JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
+
+    <script>
+        // Configuration des graphiques
+        const performanceCtx = document.getElementById('performanceChart').getContext('2d');
+        const cpuChart = new Chart(performanceCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'CPU %',
+                        data: [],
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.1,
+                        fill: true
+                    },
+                    {
+                        label: 'Mémoire %',
+                        data: [],
+                        borderColor: 'rgb(54, 162, 235)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.1,
+                        fill: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        const networkCtx = document.getElementById('networkChart').getContext('2d');
+        const networkChart = new Chart(networkCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Upload', 'Download'],
+                datasets: [{
+                    label: 'KB',
+                    data: [0, 0],
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.7)',
+                        'rgba(54, 162, 235, 0.7)'
+                    ],
+                    borderColor: [
+                        'rgba(255, 99, 132, 1)',
+                        'rgba(54, 162, 235, 1)'
+                    ],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // Mise à jour des données en temps réel
+        function updateStats() {
+            fetch('/admin/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    // Mettre à jour les compteurs
+                    document.getElementById('visitors-count').textContent = data.visitors;
+                    document.getElementById('cpu-usage').textContent = data.system.cpu.toFixed(1) + '%';
+                    document.getElementById('memory-usage').textContent = data.system.memory.toFixed(1) + '%';
+                    document.getElementById('disk-usage').textContent = data.system.disk.toFixed(1) + '%';
+
+                    // Mettre à jour les graphiques
+                    const now = new Date().toLocaleTimeString();
+                    cpuChart.data.labels.push(now);
+                    cpuChart.data.datasets[0].data.push(data.system.cpu);
+                    cpuChart.data.datasets[1].data.push(data.system.memory);
+                    if (cpuChart.data.labels.length > 15) {
+                        cpuChart.data.labels.shift();
+                        cpuChart.data.datasets[0].data.shift();
+                        cpuChart.data.datasets[1].data.shift();
+                    }
+                    cpuChart.update();
+
+                    networkChart.data.datasets[0].data = [
+                        data.system.network.sent / 1024,
+                        data.system.network.recv / 1024
+                    ];
+                    networkChart.update();
+
+                    // Mettre à jour la table des visiteurs
+                    const tbody = document.getElementById('visitors-body');
+                    tbody.innerHTML = '';
+                    for (const [ip, info] of Object.entries(data.ips)) {
+                        const row = document.createElement('tr');
+                        if (info.banned) row.className = 'banned';
+                        
+                        const lastActivity = new Date(info.last_activity);
+                        const now = new Date();
+                        const diffMinutes = Math.floor((now - lastActivity) / 60000);
+                        
+                        row.innerHTML = `
+                            <td>${ip}</td>
+                            <td title="${info.user_agent}">${info.user_agent.substring(0, 50)}${info.user_agent.length > 50 ? '...' : ''}</td>
+                            <td>${info.requests}</td>
+                            <td>${diffMinutes} minute(s) ago</td>
+                            <td>
+                                ${info.banned ? 
+                                    `<button class="btn btn-sm btn-success unban-btn" data-ip="${ip}"><i class="fas fa-unlock"></i> Unban</button>` : 
+                                    `<button class="btn btn-sm btn-danger ban-btn" data-ip="${ip}"><i class="fas fa-ban"></i> Ban</button>`}
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    }
+
+                    // Ajouter les événements aux boutons
+                    document.querySelectorAll('.ban-btn').forEach(btn => {
+                        btn.addEventListener('click', () => banIP(btn.dataset.ip));
+                    });
+                    document.querySelectorAll('.unban-btn').forEach(btn => {
+                        btn.addEventListener('click', () => unbanIP(btn.dataset.ip));
+                    });
+                });
+        }
+
+        // Fonctions pour ban/unban
+        function banIP(ip) {
+            fetch(`/admin/api/ban/${ip}`, { method: 'POST' })
+                .then(() => updateStats());
+        }
+
+        function unbanIP(ip) {
+            fetch(`/admin/api/unban/${ip}`, { method: 'POST' })
+                .then(() => updateStats());
+        }
+
+        // Actualiser toutes les 2 secondes
+        setInterval(updateStats, 2000);
+        updateStats(); // Première mise à jour
+    </script>
 </body>
 </html>"""
-    with open(f"templates/{ADMIN_PANEL}", "w", encoding='utf-8') as f:
+    
+    with open(admin_path, "w", encoding='utf-8') as f:
         f.write(admin_template)
-
-
-@app.route('/')
-def home():
-    return "Application démarrée avec succès !"
-
+    logger.info(f"Template admin créé : {admin_path}")
 
 def cleanup():
     """Nettoyage des dossiers temporaires"""
