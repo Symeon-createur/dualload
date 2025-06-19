@@ -136,11 +136,10 @@ def validate_soundcloud_url(url, expected_type):
         return False
 
 def sanitize_filename(filename):
-    # Autorise plus de caractères spéciaux courants
+    # Garde les caractères alphanumériques, espaces, et certains caractères spéciaux
     filename = re.sub(r'[\\/*?:"<>|]', "", filename)
     filename = re.sub(r'\s+', ' ', filename).strip()
-    # Conserve les caractères spéciaux utiles comme (), [], etc.
-    return filename[:200]
+    return filename[:250]  # Augmentez la limite si nécessaire
 
 def get_client_ip():
     if request.headers.getlist("X-Forwarded-For"):
@@ -352,10 +351,10 @@ def soundcloud():
 @app.route("/downloaded/<path:filename>")
 def downloaded(filename):
     try:
-        # Validation plus permissive des noms de fichiers
-        if not re.match(r'^[a-zA-Z0-9_\-.()\[\] ]+$', filename) or '..' in filename or '/' in filename:
+        # Nouvelle validation plus permissive
+        if not re.match(r'^[\w\-.()\[\] ]+$', filename) or any(x in filename for x in ['..', '/', '\\']):
             logger.error(f"Nom de fichier rejeté : {filename}")
-            raise ValueError("Nom de fichier invalide")
+            raise ValueError("Nom de fichier contient des caractères non autorisés")
             
         filepath = os.path.join(DOWNLOAD_FOLDER, filename)
         if not os.path.exists(filepath):
