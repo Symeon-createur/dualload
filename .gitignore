@@ -4,3 +4,27 @@ temp_downloads/
 __pycache__/
 *.log
 *.bat
+
+# Fichiers admin générés dynamiquement
+/templates/admin_*.html
+!/templates/admin_login.html  # On conserve uniquement le template de base
+
+# Fichiers de logs applicatifs
+/logs/
+*.log
+
+# Fichiers de cache et environnement
+.env
+.venv/
+venv/
+.env.local
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Fichiers d'IDE
+.idea/
+.vscode/
+*.swp
+*.swo
