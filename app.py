@@ -12,10 +12,9 @@ import atexit
 import secrets
 from functools import wraps
 from collections import defaultdict
-import datetime
-from datetime import datetime as dt 
 import psutil
-from threading import Thread
+from threading import Thread, Lock
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Initialisation de l'application
 app = Flask(__name__, static_url_path='/static')
@@ -23,23 +22,28 @@ app = Flask(__name__, static_url_path='/static')
 # Configuration sécurité
 app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 app.permanent_session_lifetime = timedelta(minutes=30)
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # Configuration admin
 ADMIN_PANEL = f"admin_{secrets.token_hex(8)}.html"
-ADMIN_PASSWORD = "Mot2Passe"  # À modifier impérativement
+ADMIN_PASSWORD = generate_password_hash("VotreMot2PasseComplexe!123")  # À modifier
 
 # Configuration des dossiers
 DOWNLOAD_FOLDER = os.path.abspath("downloads")
 TEMP_FOLDER = os.path.abspath("temp_downloads")
+LOG_FOLDER = os.path.abspath("logs")
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
+os.makedirs(LOG_FOLDER, exist_ok=True)
 
 # Configuration du logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('app.log'),
+        logging.FileHandler(os.path.join(LOG_FOLDER, 'app.log')),
         logging.StreamHandler()
     ]
 )
@@ -47,11 +51,12 @@ logger = logging.getLogger(__name__)
 
 # Dictionnaire pour stocker les visiteurs en temps réel
 live_visitors = defaultdict(lambda: {
-    'last_activity': datetime.datetime.now(),
+    'last_activity': datetime.now(),
     'user_agent': '',
     'requests': 0,
     'banned': False
 })
+visitors_lock = Lock()
 
 # Statistiques système
 system_stats = {
@@ -85,9 +90,25 @@ stats_thread.start()
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get('is_admin'):
+        if not all([
+            session.get('is_admin'),
+            session.get('admin_ip') == get_client_ip(),
+            session.get('_fresh')
+        ]):
+            session.clear()
+            flash('Authentification admin requise', 'error')
             return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
+    return decorated_function
+
+def rate_limit(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        client_ip = get_client_ip()
+        with visitors_lock:
+            if live_visitors[client_ip].get('banned', False):
+                abort(403, description="Accès refusé - IP bannie")
+            return f(*args, **kwargs)
     return decorated_function
 
 def is_valid_url(url):
@@ -119,75 +140,65 @@ def sanitize_filename(filename):
     filename = re.sub(r'\s+', ' ', filename).strip()
     return filename[:200]
 
+def get_client_ip():
+    if request.headers.getlist("X-Forwarded-For"):
+        return request.headers.getlist("X-Forwarded-For")[0].split(',')[0].strip()
+    return request.remote_addr
+
 # ==============================================
 # Middleware pour tracker les visiteurs
 # ==============================================
 
 @app.before_request
 def track_activity():
-    if request.headers.getlist("X-Forwarded-For"):
-        client_ip = request.headers.getlist("X-Forwarded-For")[0].split(',')[0].strip()
-    else:
-        client_ip = request.remote_addr
-
-    if live_visitors[client_ip]['banned']:
-        abort(403, description="Accès refusé - IP bannie")
-    
-    live_visitors[client_ip] = {
-        'last_activity': datetime.datetime.now(),
-        'user_agent': request.headers.get('User-Agent', 'Inconnu'),
-        'requests': live_visitors.get(client_ip, {}).get('requests', 0) + 1,
-        'banned': False
-    }
+    client_ip = get_client_ip()
+    with visitors_lock:
+        if live_visitors[client_ip].get('banned', False):
+            abort(403, description="Accès refusé - IP bannie")
+        
+        live_visitors[client_ip] = {
+            'last_activity': datetime.now(),
+            'user_agent': request.headers.get('User-Agent', 'Inconnu')[:200],
+            'requests': live_visitors[client_ip].get('requests', 0) + 1,
+            'banned': False
+        }
 
 # ==============================================
 # Fonctions de téléchargement
 # ==============================================
 
 def download_media(url, platform, quality=None):
-    temp_file = os.path.join(TEMP_FOLDER, f"dl_{int(time.time())}")
+    temp_file = os.path.join(TEMP_FOLDER, f"dl_{int(time.time())}_{secrets.token_hex(4)}")
     
     try:
-        if platform == 'youtube':
-            if request.form.get("mode") == "audio":
-                opts = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': temp_file + '.%(ext)s',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': quality or '192',
-                    }],
-                    'verbose': True,
-                    'force_ipv4': True
-                }
-            else:
-                opts = {
-                    'format': f'bestvideo[height<={quality or "2160"}]+bestaudio/best',
-                    'outtmpl': temp_file + '.%(ext)s',
-                    'merge_output_format': 'mp4',
-                    'verbose': True,
-                    'force_ipv4': True
-                }
-        elif platform == 'soundcloud':
-            opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': temp_file + '.%(ext)s',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': quality or '320',
-                }],
-                'verbose': True,
-                'force_ipv4': True
-            }
+        ydl_opts = {
+            'format': 'bestaudio/best' if request.form.get("mode") == "audio" else f'bestvideo[height<={quality or "1080"}]+bestaudio/best',
+            'outtmpl': temp_file + '.%(ext)s',
+            'verbose': False,
+            'force_ipv4': True,
+            'quiet': True,
+            'no_warnings': True
+        }
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        if platform == 'youtube' and request.form.get("mode") == "audio":
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': quality or '192',
+            }]
+        elif platform == 'soundcloud':
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': quality or '320',
+            }]
+        else:
+            ydl_opts['merge_output_format'] = 'mp4'
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
-            downloaded_files = [f for f in os.listdir(TEMP_FOLDER) 
-                             if f.startswith(os.path.basename(temp_file))]
-            
+            downloaded_files = [f for f in os.listdir(TEMP_FOLDER) if f.startswith(os.path.basename(temp_file))]
             if not downloaded_files:
                 raise FileNotFoundError("Aucun fichier téléchargé")
                 
@@ -210,7 +221,7 @@ def download_media(url, platform, quality=None):
                     logger.error(f"Erreur suppression fichier temporaire: {str(e)}")
 
 def download_soundcloud_collection(url):
-    temp_dir = os.path.join(TEMP_FOLDER, f"sc_{int(time.time())}")
+    temp_dir = os.path.join(TEMP_FOLDER, f"sc_{int(time.time())}_{secrets.token_hex(4)}")
     os.makedirs(temp_dir, exist_ok=True)
     
     try:
@@ -223,10 +234,12 @@ def download_soundcloud_collection(url):
                 'preferredquality': '320',
             }],
             'extract_flat': False,
-            'playlistend': 100,
+            'playlistend': 50,
             'ignoreerrors': True,
-            'verbose': True,
+            'verbose': False,
             'force_ipv4': True,
+            'quiet': True,
+            'no_warnings': True,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
             }
@@ -247,7 +260,7 @@ def download_soundcloud_collection(url):
             zip_name = f"{sanitize_filename(info.get('title', 'soundcloud_collection'))}.zip"
             zip_path = os.path.join(DOWNLOAD_FOLDER, zip_name)
             
-            with zipfile.ZipFile(zip_path, 'w') as zipf:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in files:
                     file_path = os.path.join(temp_dir, file)
                     zipf.write(file_path, arcname=file)
@@ -269,11 +282,16 @@ def index():
     return render_template("index.html", messages=get_flashed_messages())
 
 @app.route("/youtube", methods=["GET", "POST"])
+@rate_limit
 def youtube():
     if request.method == "POST":
         url = request.form.get("url", "").strip()
         if not url:
             flash("URL manquante", "error")
+            return redirect(url_for('youtube'))
+        
+        if not is_valid_url(url) or ('youtube.com' not in url and 'youtu.be' not in url):
+            flash("URL YouTube invalide", "error")
             return redirect(url_for('youtube'))
         
         try:
@@ -297,6 +315,7 @@ def youtube():
     return render_template("youtube.html", messages=get_flashed_messages())
 
 @app.route("/soundcloud", methods=["GET", "POST"])
+@rate_limit
 def soundcloud():
     if request.method == "POST":
         url = request.form.get("url", "").strip()
@@ -314,7 +333,7 @@ def soundcloud():
             
             if content_type == "collection":
                 filename = download_soundcloud_collection(url)
-                flash("Playlist/likes téléchargés dans le ZIP!", "success")
+                flash("Playlist téléchargée avec succès!", "success")
             else:
                 filename = download_media(url, 'soundcloud', quality)
                 flash("Titre téléchargé avec succès!", "success")
@@ -331,18 +350,20 @@ def soundcloud():
 @app.route("/downloaded/<path:filename>")
 def downloaded(filename):
     try:
+        if not re.match(r'^[\w\-\.]+$', filename) or '..' in filename:
+            raise ValueError("Nom de fichier invalide")
+            
         filepath = os.path.join(DOWNLOAD_FOLDER, filename)
         if not os.path.exists(filepath):
             raise FileNotFoundError("Fichier non disponible")
         
-        if filename.lower().endswith('.mp3'):
-            mimetype = 'audio/mpeg'
-        elif filename.lower().endswith('.mp4'):
-            mimetype = 'video/mp4'
-        elif filename.lower().endswith('.zip'):
-            mimetype = 'application/zip'
-        else:
-            mimetype = 'application/octet-stream'
+        ext = os.path.splitext(filename)[1].lower()
+        mime_types = {
+            '.mp3': 'audio/mpeg',
+            '.mp4': 'video/mp4',
+            '.zip': 'application/zip'
+        }
+        mimetype = mime_types.get(ext, 'application/octet-stream')
         
         return send_file(
             filepath,
@@ -362,12 +383,21 @@ def downloaded(filename):
 @app.route('/admin_login', methods=['GET', 'POST'])
 def admin_login():
     if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
+        password = request.form.get('password', '').strip()
+        
+        if check_password_hash(ADMIN_PASSWORD, password):
+            session.clear()
             session['is_admin'] = True
+            session['_fresh'] = True
+            session['admin_ip'] = get_client_ip()
             session.permanent = True
+            
+            logger.info(f"Connexion admin réussie depuis {get_client_ip()}")
             return redirect(url_for('admin_panel'))
-        else:
-            flash('Mot de passe incorrect', 'error')
+        
+        flash('Mot de passe incorrect', 'error')
+        logger.warning(f"Tentative de connexion admin échouée depuis {get_client_ip()}")
+    
     return render_template('admin_login.html')
 
 @app.route('/admin')
@@ -377,22 +407,21 @@ def admin_panel():
         downloads = []
         for f in os.listdir(DOWNLOAD_FOLDER):
             file_path = os.path.join(DOWNLOAD_FOLDER, f)
-            if os.path.isfile(file_path):  # Vérifier que c'est bien un fichier
+            if os.path.isfile(file_path):
                 mtime = os.path.getmtime(file_path)
                 downloads.append({
                     'name': f,
-                    'date': datetime.datetime.fromtimestamp(mtime),
+                    'date': datetime.fromtimestamp(mtime),
                     'size': os.path.getsize(file_path)
                 })
 
-        # Trier par date décroissante
         downloads.sort(key=lambda x: x['date'], reverse=True)
         
         return render_template(ADMIN_PANEL, 
                            stats={
                                'downloads': len(downloads),
                                'space_used': f"{sum(f['size'] for f in downloads) / (1024*1024):.2f} MB",
-                               'last_downloads': downloads[:10]  # Limiter à 10 derniers
+                               'last_downloads': downloads[:10]
                            },
                            system_stats=system_stats,
                            visitors=live_visitors)
@@ -417,22 +446,26 @@ def admin_api_stats():
 @app.route('/admin/api/ban/<ip>', methods=['POST'])
 @admin_required
 def admin_api_ban(ip):
-    if ip in live_visitors:
-        live_visitors[ip]['banned'] = True
-        return jsonify({'status': 'success'})
-    return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
+    with visitors_lock:
+        if ip in live_visitors:
+            live_visitors[ip]['banned'] = True
+            logger.info(f"IP bannie: {ip}")
+            return jsonify({'status': 'success'})
+        return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
 
 @app.route('/admin/api/unban/<ip>', methods=['POST'])
 @admin_required
 def admin_api_unban(ip):
-    if ip in live_visitors:
-        live_visitors[ip]['banned'] = False
-        return jsonify({'status': 'success'})
-    return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
+    with visitors_lock:
+        if ip in live_visitors:
+            live_visitors[ip]['banned'] = False
+            logger.info(f"IP débannie: {ip}")
+            return jsonify({'status': 'success'})
+        return jsonify({'status': 'error', 'message': 'IP non trouvée'}), 404
 
 @app.route('/admin/logout')
 def admin_logout():
-    session.pop('is_admin', None)
+    session.clear()
     flash('Vous avez été déconnecté', 'success')
     return redirect(url_for('index'))
 
@@ -443,24 +476,18 @@ def admin_logout():
 def create_admin_template():
     global ADMIN_PANEL
     
-    # Créer le dossier templates s'il n'existe pas
     templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
     os.makedirs(templates_dir, exist_ok=True)
 
-    # Supprimer les anciens fichiers admin_*.html
     for filename in os.listdir(templates_dir):
-        if (filename.startswith("admin_") 
-            and filename.endswith(".html")
-            and filename != "admin_login.html"):
+        if (filename.startswith("admin_") and filename.endswith(".html") and filename != "admin_login.html"):
             try:
                 os.remove(os.path.join(templates_dir, filename))
             except Exception as e:
                 logger.error(f"Erreur suppression {filename}: {e}")
 
-    # Créer un nouveau fichier admin
     ADMIN_PANEL = f"admin_{secrets.token_hex(8)}.html"
     admin_path = os.path.join(templates_dir, ADMIN_PANEL)
-    os.makedirs("templates", exist_ok=True)
     
     admin_template = r"""<!DOCTYPE html>
 <html lang="fr">
@@ -905,16 +932,12 @@ def create_admin_template():
     </script>
 </body>
 </html>"""
-
-    templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
-    os.makedirs(templates_dir, exist_ok=True)
-
+    
     with open(admin_path, "w", encoding='utf-8') as f:
         f.write(admin_template)
     logger.info(f"Template admin créé : {admin_path}")
 
 def cleanup():
-    """Nettoyage des dossiers temporaires"""
     for folder in [TEMP_FOLDER, DOWNLOAD_FOLDER]:
         for filename in os.listdir(folder):
             file_path = os.path.join(folder, filename)
@@ -926,7 +949,7 @@ def cleanup():
             except Exception as e:
                 logger.error(f"Échec suppression {file_path}: {e}")
 
-# Initialisation au démarrage
+# Initialisation
 create_admin_template()
 atexit.register(cleanup)
 
